@@ -35,9 +35,7 @@ def rgb_to_hsi(rgb):
     H[min_rgb == rgb[..., 2]] = 2 * np.pi - theta[min_rgb == rgb[..., 2]]
     
     H[min_rgb == rgb[..., 0]] = 0
-    
     H = H / (2 * np.pi)  # Normalize Hue to [0, 1]
-
     return np.stack((H, S, I), axis=-1)
 
 def hsi_to_rgb(hsi):
@@ -71,7 +69,6 @@ def hsi_to_rgb(hsi):
     R = np.clip(R * 255, 0, 255).astype(np.uint8)
     G = np.clip(G * 255, 0, 255).astype(np.uint8)
     B = np.clip(B * 255, 0, 255).astype(np.uint8)
-
     return np.stack((R, G, B), axis=-1)
 
 
@@ -209,15 +206,11 @@ class StegaStampEncoderUnet(nn.Module):
     def forward(self, inputs):
         secrect, image = inputs
         image = rgb_to_hsi(image)  # Convert RGB to HSI
-	    # Rest of the processing...
         secrect = secrect - .5
         image = image - .5
-
         secrect = self.secret_dense(secrect)
         secrect = secrect.reshape(-1, 3, 50, 50)
-        image = nn.functional.interpolate(image, scale_factor=(1/8, 1/8))
-        # secrect_enlarged = nn.Upsample(scale_factor=(8, 8))(secrect)
-
+        image = nn.functional.interpolate(image, scale_factor=(1 / 8, 1 / 8))
         inputs = torch.cat([secrect, image], dim=1)
         conv1 = self.conv1(inputs)
         x1 = self.inc(conv1)
@@ -229,10 +222,10 @@ class StegaStampEncoderUnet(nn.Module):
         x = self.up3(x, x1)
         x = self.outc(x)
         x = self.conv2(x)
-
         secrect_enlarged = nn.Upsample(scale_factor=(8, 8))(x)
         secrect_enlarged = self.sig(secrect_enlarged)
-	    return hsi_to_rgb(secrect_enlarged)
+        return hsi_to_rgb(secrect_enlarged)
+
 
 
 class SpatialTransformerNetwork(nn.Module):
