@@ -199,7 +199,7 @@ class StegaStampEncoderUnet(nn.Module):
         super(StegaStampEncoderUnet, self).__init__()
         self.secret_dense = Dense(100, 7500, activation='relu', kernel_initializer='he_normal')
 
-        self.conv1 = nn.Conv2d(6, 6, 3, padding=8)
+        self.conv1 = nn.Conv2d(6, 6, 3, padding=1)
         self.inc = (UNet.DoubleConv(6, 64))
         self.down1 = (UNet.Down(64, 128))
         self.down2 = (UNet.Down(128, 256))
