@@ -16,10 +16,11 @@ import lpips
 import time
 from datetime import datetime, timedelta
 from kan_unet import KANU_Net  # Import the KAN-based U-Net model
+from torch.cuda.amp import autocast, GradScaler
 
 CHECKPOINT_MARK_1 = 10_000
 CHECKPOINT_MARK_2 = 1500
-IMAGE_SIZE = 400
+IMAGE_SIZE = 256  # Adjusted image size for lower memory consumption
 
 def infoMessage0(string):
     print(f'[-----]: {string}')
@@ -47,7 +48,7 @@ def main():
     writer = SummaryWriter(log_path)
     infoMessage0('Loading data')
     dataset = StegaData(args.train_path, args.secret_size, size=(IMAGE_SIZE, IMAGE_SIZE))
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, pin_memory=True)  # Reduced batch size
 
     # Replace StegaStampEncoder with KANU_Net for the new U-Net model
     kanu_net = KANU_Net(n_channels=3, n_classes=1, bilinear=True, device='cuda' if torch.cuda.is_available() else 'cpu')
@@ -69,10 +70,9 @@ def main():
     optimize_secret_loss = optim.Adam(g_vars, lr=args.lr)
     optimize_dis = optim.RMSprop(d_vars, lr=0.00001)
 
-    height = IMAGE_SIZE
-    width = IMAGE_SIZE
+    scaler = GradScaler()  # Initialize gradient scaler for mixed precision
 
-    total_steps = len(dataset) // args.batch_size + 1
+    total_steps = len(dataset) // 4 + 1  # Update batch size here as well
     global_step = 0
 
     start_time = time.time()
@@ -101,26 +101,35 @@ def main():
                 Ms = Ms.cuda()
 
             # Forward pass using the KANU_Net
-            image_output = kanu_net(image_input)
+            with autocast():
+                image_output = kanu_net(image_input)
 
-            loss_scales = [l2_loss_scale, 0, secret_loss_scale, 0]
-            yuv_scales = [args.y_scale, args.u_scale, args.v_scale]
-            loss, secret_loss, D_loss, bit_acc, str_acc = model.build_model(kanu_net, discriminator, lpips_alex,
-                                                                            secret_input, image_input,
-                                                                            args.l2_edge_gain, args.borders,
-                                                                            args.secret_size, Ms, loss_scales,
-                                                                            yuv_scales, args, global_step, writer)
+                loss_scales = [l2_loss_scale, 0, secret_loss_scale, 0]
+                yuv_scales = [args.y_scale, args.u_scale, args.v_scale]
+                loss, secret_loss, D_loss, bit_acc, str_acc = model.build_model(kanu_net, discriminator, lpips_alex,
+                                                                                secret_input, image_input,
+                                                                                args.l2_edge_gain, args.borders,
+                                                                                args.secret_size, Ms, loss_scales,
+                                                                                yuv_scales, args, global_step, writer)
+
+            # Use scaler for backward pass
             if no_im_loss:
                 optimize_secret_loss.zero_grad()
-                secret_loss.backward()
-                optimize_secret_loss.step()
+                scaler.scale(secret_loss).backward()  # Scale the loss before backward pass
+                scaler.step(optimize_secret_loss)  # Update model parameters
+                scaler.update()
             else:
                 optimize_loss.zero_grad()
-                loss.backward()
-                optimize_loss.step()
+                scaler.scale(loss).backward()
+                scaler.step(optimize_loss)
+                scaler.update()
                 if not args.no_gan:
                     optimize_dis.zero_grad()
-                    optimize_dis.step()
+                    scaler.scale(D_loss).backward()
+                    scaler.step(optimize_dis)
+                    scaler.update()
+
+            torch.cuda.empty_cache()  # Clear unused GPU memory
 
             step_time = time.time() - step_start_time
             total_time_elapsed = time.time() - start_time
@@ -133,7 +142,7 @@ def main():
                                                    'D_loss loss': D_loss.item()})
             if global_step % 100 == 0:
                 print(f"Step: {global_step}, Time per Step: {step_time:.2f} seconds, ETA: {eta}, Loss = {loss:.4f}")
-            
+
             if global_step % CHECKPOINT_MARK_1 == 0:
                 torch.save(kanu_net, os.path.join(args.saved_models, "kanu_net.pth"))
 
