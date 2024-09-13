@@ -37,6 +37,9 @@ if not os.path.exists(args.saved_models):
 args.min_loss = float('inf')
 args.min_secret_loss = float('inf')
 
+# Set environment variable for CUDA memory management
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 def main():
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = True
@@ -52,8 +55,9 @@ def main():
         raise ValueError("The dataset is empty. Please check the training data.")
     
     print(f"Number of samples in dataset: {len(dataset)}")
-    
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
+
+    # Adjust batch_size here
+    dataloader = DataLoader(dataset, batch_size=args.batch_size // 2, shuffle=True, pin_memory=True)
 
     kanu_net = KANU_Net(n_channels=3, n_classes=1, bilinear=True, device='cuda' if torch.cuda.is_available() else 'cpu')
     
@@ -106,7 +110,8 @@ def main():
                 Ms = Ms.cuda()
 
             # Forward pass using the KANU_Net
-            image_output = kanu_net(image_input)
+            with torch.no_grad():  # Prevents gradient calculation to save memory
+                image_output = kanu_net(image_input)
 
             loss_scales = [l2_loss_scale, 0, secret_loss_scale, 0]
             yuv_scales = [args.y_scale, args.u_scale, args.v_scale]
