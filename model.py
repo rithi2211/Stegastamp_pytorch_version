@@ -15,62 +15,70 @@ import unet_parts as UNet
 from torchvision import transforms
 
 def rgb_to_hsi(rgb):
+    # Assuming input is in (N, C, H, W) format
+    rgb = rgb.permute(0, 2, 3, 1)  # Convert to (N, H, W, C)
+    
     # Normalize RGB values to [0, 1]
     rgb = rgb / 255.0
     
     # Calculate Intensity
-    I = torch.mean(rgb, dim=2)
+    I = torch.mean(rgb, dim=3)
     
     # Calculate Saturation
-    min_rgb = torch.min(rgb, dim=2)[0]
+    min_rgb, _ = torch.min(rgb, dim=3)
     S = 1 - (min_rgb / (I + 1e-10))  # Adding a small value to avoid division by zero
     
     # Calculate Hue
-    H = torch.zeros_like(I)
-    num = 0.5 * ((rgb[..., 0] - rgb[..., 1]) + (rgb[..., 0] - rgb[..., 2]))
-    den = torch.sqrt((rgb[..., 0] - rgb[..., 1])**2 + (rgb[..., 0] - rgb[..., 2]) * (rgb[..., 1] - rgb[..., 2]))
-    
-    theta = torch.acos(num / (den + 1e-10))  # Adding a small value to avoid division by zero
-    
-    # Use where to assign values
-    H = torch.where(min_rgb == rgb[..., 1], theta, H)
-    H = torch.where(min_rgb == rgb[..., 2], 2 * torch.pi - theta, H)
-    
+    R, G, B = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    num = 0.5 * ((R - G) + (R - B))
+    den = torch.sqrt((R - G) ** 2 + (R - B) * (G - B))
+    theta = torch.acos(num / (den + 1e-10))  # Avoid division by zero
+
+    H = torch.where(B > G, 2 * torch.pi - theta, theta)
     H = H / (2 * torch.pi)  # Normalize Hue to [0, 1]
-    return torch.stack((H, S, I), dim=-1)
+    
+    # Return HSI stacked as (N, H, W, 3)
+    hsi = torch.stack((H, S, I), dim=-1)
+    
+    return hsi.permute(0, 3, 1, 2)  # Convert back to (N, C, H, W)
+
 
 def hsi_to_rgb(hsi):
     H = hsi[..., 0] * 2 * torch.pi  # Convert Hue back to [0, 2*pi]
     S = hsi[..., 1]
     I = hsi[..., 2]
 
-    # Initialize RGB channels
     R = torch.zeros_like(I)
     G = torch.zeros_like(I)
     B = torch.zeros_like(I)
 
-    for i in range(hsi.shape[0]):
-        for j in range(hsi.shape[1]):
-            if H[i, j] < 2 * torch.pi / 3:
-                R[i, j] = I[i, j] * (1 + S[i, j] * torch.cos(H[i, j]) / torch.cos(torch.pi / 3 - H[i, j]))
-                G[i, j] = I[i, j] * (1 + S[i, j] * (1 - torch.cos(H[i, j]) / torch.cos(torch.pi / 3 - H[i, j])))
-                B[i, j] = I[i, j] * (1 - S[i, j])
-            elif H[i, j] < 4 * torch.pi / 3:
-                H[i, j] -= 2 * torch.pi / 3
-                R[i, j] = I[i, j] * (1 - S[i, j])
-                G[i, j] = I[i, j] * (1 + S[i, j] * torch.cos(H[i, j]) / torch.cos(torch.pi / 3 - H[i, j]))
-                B[i, j] = I[i, j] * (1 + S[i, j] * (1 - torch.cos(H[i, j]) / torch.cos(torch.pi / 3 - H[i, j])))
-            else:
-                H[i, j] -= 4 * torch.pi / 3
-                R[i, j] = I[i, j] * (1 + S[i, j] * (1 - torch.cos(H[i, j]) / torch.cos(torch.pi / 3 - H[i, j])))
-                G[i, j] = I[i, j] * (1 - S[i, j])
-                B[i, j] = I[i, j] * (1 + S[i, j] * torch.cos(H[i, j]) / torch.cos(torch.pi / 3 - H[i, j]))
+    # Calculate RGB for H in [0, 2*pi/3]
+    mask1 = H < (2 * torch.pi / 3)
+    R[mask1] = I[mask1] * (1 + S[mask1] * torch.cos(H[mask1]) / torch.cos(torch.pi / 3 - H[mask1]))
+    G[mask1] = I[mask1] * (1 + S[mask1] * (1 - torch.cos(H[mask1]) / torch.cos(torch.pi / 3 - H[mask1])))
+    B[mask1] = I[mask1] * (1 - S[mask1])
+
+    # Calculate RGB for H in [2*pi/3, 4*pi/3]
+    mask2 = (H >= 2 * torch.pi / 3) & (H < 4 * torch.pi / 3)
+    H_shifted = H[mask2] - 2 * torch.pi / 3
+    R[mask2] = I[mask2] * (1 - S[mask2])
+    G[mask2] = I[mask2] * (1 + S[mask2] * torch.cos(H_shifted) / torch.cos(torch.pi / 3 - H_shifted))
+    B[mask2] = I[mask2] * (1 + S[mask2] * (1 - torch.cos(H_shifted) / torch.cos(torch.pi / 3 - H_shifted)))
+
+    # Calculate RGB for H in [4*pi/3, 2*pi]
+    mask3 = H >= 4 * torch.pi / 3
+    H_shifted = H[mask3] - 4 * torch.pi / 3
+    R[mask3] = I[mask3] * (1 + S[mask3] * (1 - torch.cos(H_shifted) / torch.cos(torch.pi / 3 - H_shifted)))
+    G[mask3] = I[mask3] * (1 - S[mask3])
+    B[mask3] = I[mask3] * (1 + S[mask3] * torch.cos(H_shifted) / torch.cos(torch.pi / 3 - H_shifted))
 
     # Clip RGB values to [0, 255] and convert to uint8
     R = torch.clamp(R * 255, 0, 255).byte()
     G = torch.clamp(G * 255, 0, 255).byte()
     B = torch.clamp(B * 255, 0, 255).byte()
+
     return torch.stack((R, G, B), dim=-1)
+
 
 
 
