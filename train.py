@@ -1,7 +1,7 @@
 import os
 import yaml
 import random
-import model  # This should now refer to your KANU_Net model
+import model  # Ensure this imports the correct model module
 import numpy as np
 from glob import glob
 from easydict import EasyDict
@@ -37,28 +37,19 @@ if not os.path.exists(args.saved_models):
 args.min_loss = float('inf')
 args.min_secret_loss = float('inf')
 
-# Set environment variable for CUDA memory management
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-
 def main():
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     np.random.seed(args.seed)
 
-    if not os.path.exists(args.train_path) or len(os.listdir(args.train_path)) == 0:
-        raise ValueError(f"Training path '{args.train_path}' is either empty or does not exist.")
-    
+    log_path = os.path.join(args.logs_path, str(args.exp_name))
+    writer = SummaryWriter(log_path)
+    infoMessage0('Loading data')
     dataset = StegaData(args.train_path, args.secret_size, size=(IMAGE_SIZE, IMAGE_SIZE))
-    
-    if len(dataset) == 0:
-        raise ValueError("The dataset is empty. Please check the training data.")
-    
-    print(f"Number of samples in dataset: {len(dataset)}")
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
 
-    # Adjust batch_size here
-    dataloader = DataLoader(dataset, batch_size=args.batch_size // 2, shuffle=True, pin_memory=True)
-
+    # Replace StegaStampEncoder with KANU_Net for the new U-Net model
     kanu_net = KANU_Net(n_channels=3, n_classes=1, bilinear=True, device='cuda' if torch.cuda.is_available() else 'cpu')
     
     discriminator = model.Discriminator()  # If you're keeping the discriminator
@@ -86,10 +77,6 @@ def main():
 
     start_time = time.time()
 
-    # Initialize TensorBoard SummaryWriter
-    log_path = os.path.join(args.logs_path, str(args.exp_name))
-    writer = SummaryWriter(log_path)
-
     while global_step < args.num_steps:
         for image_input, secret_input in dataloader:  # Use the dataloader directly
             step_start_time = time.time()
@@ -114,17 +101,17 @@ def main():
                 Ms = Ms.cuda()
 
             # Forward pass using the KANU_Net
-            with torch.no_grad():  # Prevents gradient calculation to save memory
-                image_output = kanu_net(image_input)
+            image_output = kanu_net(image_input)
 
             loss_scales = [l2_loss_scale, 0, secret_loss_scale, 0]
             yuv_scales = [args.y_scale, args.u_scale, args.v_scale]
+            # Ensure the `writer` argument is passed to `build_model`
             loss, secret_loss, D_loss, bit_acc, str_acc = model.build_model(
                 kanu_net, discriminator, lpips_alex, secret_input, image_input,
-                args.l2_edge_gain, args.borders, args.secret_size, Ms, loss_scales,
-                yuv_scales, args, global_step, writer
+                args.l2_edge_gain, args.borders, args.secret_size, Ms, 
+                loss_scales, yuv_scales, args, global_step, writer
             )
-
+            
             if no_im_loss:
                 optimize_secret_loss.zero_grad()
                 secret_loss.backward()
