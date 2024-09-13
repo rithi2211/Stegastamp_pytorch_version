@@ -86,6 +86,10 @@ def main():
 
     start_time = time.time()
 
+    # Initialize TensorBoard SummaryWriter
+    log_path = os.path.join(args.logs_path, str(args.exp_name))
+    writer = SummaryWriter(log_path)
+
     while global_step < args.num_steps:
         for image_input, secret_input in dataloader:  # Use the dataloader directly
             step_start_time = time.time()
@@ -115,11 +119,11 @@ def main():
 
             loss_scales = [l2_loss_scale, 0, secret_loss_scale, 0]
             yuv_scales = [args.y_scale, args.u_scale, args.v_scale]
-            loss, secret_loss, D_loss, bit_acc, str_acc = model.build_model(kanu_net, discriminator, lpips_alex,
-                                                                            secret_input, image_input,
-                                                                            args.l2_edge_gain, args.borders,
-                                                                            args.secret_size, Ms, loss_scales,
-                                                                            yuv_scales, args, global_step, writer)
+            loss, secret_loss, D_loss, bit_acc, str_acc = model.build_model(
+                kanu_net, discriminator, lpips_alex, secret_input, image_input,
+                args.l2_edge_gain, args.borders, args.secret_size, Ms, loss_scales,
+                yuv_scales, args, global_step, writer
+            )
 
             if no_im_loss:
                 optimize_secret_loss.zero_grad()
