@@ -14,26 +14,36 @@ import unet_parts as UNet
 from torchvision import transforms
 
 def rgb_to_hsi(rgb):
-    rgb = rgb / 255.0  # Normalize RGB values to [0, 1]
-    
-    # Calculate Intensity
-    I = np.mean(rgb, axis=2)
-    
-    # Calculate Saturation
-    min_rgb = np.min(rgb, axis=2)
+    # Ensure rgb is a PyTorch tensor
+    if isinstance(rgb, np.ndarray):
+        rgb = torch.tensor(rgb, dtype=torch.float32)
+
+    # Normalize RGB values to [0, 1]
+    rgb = rgb / 255.0
+
+    # Calculate the intensity
+    I = rgb.mean(dim=2)  # Mean across the color channels
+
+    # Calculate the saturation
+    min_rgb = rgb.min(dim=2)[0]
     S = 1 - (min_rgb / (I + 1e-10))  # Avoid division by zero
 
-    # Calculate Hue
-    H = np.zeros(rgb.shape[0:2])
-    num = 0.5 * ((rgb[..., 0] - rgb[..., 1]) + (rgb[..., 0] - rgb[..., 2]))
-    den = np.sqrt((rgb[..., 0] - rgb[..., 1])**2 + (rgb[..., 0] - rgb[..., 2]) * (rgb[..., 1] - rgb[..., 2]))
-    
-    theta = np.arccos(num / (den + 1e-10))  # Avoid division by zero
-    H[min_rgb == rgb[..., 1]] = theta[min_rgb == rgb[..., 1]]
-    H[min_rgb == rgb[..., 2]] = 2 * np.pi - theta[min_rgb == rgb[..., 2]]
-    H[min_rgb == rgb[..., 0]] = 0
-    H = H / (2 * np.pi)  # Normalize Hue to [0, 1]
-    return np.stack((H, S, I), axis=-1)
+    # Calculate hue
+    num = 0.5 * ((rgb[:, :, 0] - rgb[:, :, 1]) + (rgb[:, :, 0] - rgb[:, :, 2]))
+    den = torch.sqrt((rgb[:, :, 0] - rgb[:, :, 1])**2 + (rgb[:, :, 0] - rgb[:, :, 2]) * (rgb[:, :, 1] - rgb[:, :, 2]))
+    theta = torch.acos(num / (den + 1e-10))  # Avoid division by zero
+
+    # Assign hue based on conditions
+    H = torch.zeros_like(I)
+    H[rgb[:, :, 2] <= rgb[:, :, 1]] = theta[rgb[:, :, 2] <= rgb[:, :, 1]]
+    H[rgb[:, :, 2] > rgb[:, :, 1]] = 2 * np.pi - theta[rgb[:, :, 2] > rgb[:, :, 1]]
+
+    # Normalize hue to [0, 1]
+    H = H / (2 * np.pi)
+
+    # Combine into HSI
+    hsi = torch.stack((H, S, I), dim=2)
+    return hsi
 
 def hsi_to_rgb(hsi):
     H = hsi[..., 0] * 2 * np.pi  # Convert Hue back to [0, 2*pi]
