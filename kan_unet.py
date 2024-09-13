@@ -8,7 +8,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from src.fastkanconv import FastKANConvLayer
+from fastkanconv import FastKANConvLayer
 
 class DoubleConv(nn.Module):
     """(convolution => [BN] => ReLU) * 2"""
