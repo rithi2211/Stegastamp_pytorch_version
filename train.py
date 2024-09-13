@@ -15,7 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 import lpips
 import time
 from datetime import datetime, timedelta
-from kanu_unet import KANU_Net  # Import the KAN-based U-Net model
+from kan_unet import KANU_Net  # Import the KAN-based U-Net model
 
 CHECKPOINT_MARK_1 = 10_000
 CHECKPOINT_MARK_2 = 1500
