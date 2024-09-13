@@ -15,6 +15,9 @@ import unet_parts as UNet
 from torchvision import transforms
 
 def rgb_to_hsi(rgb):
+    if isinstance(rgb, torch.Tensor):
+        rgb = rgb.cpu().numpy()  # Convert PyTorch tensor to NumPy array
+    
     # Normalize RGB values to [0, 1]
     rgb = rgb / 255.0
     
@@ -40,6 +43,9 @@ def rgb_to_hsi(rgb):
     return np.stack((H, S, I), axis=-1)
 
 def hsi_to_rgb(hsi):
+    if isinstance(hsi, torch.Tensor):
+        hsi = hsi.cpu().numpy()  # Convert PyTorch tensor to NumPy array
+
     H = hsi[..., 0] * 2 * np.pi  # Convert Hue back to [0, 2*pi]
     S = hsi[..., 1]
     I = hsi[..., 2]
@@ -71,6 +77,7 @@ def hsi_to_rgb(hsi):
     G = np.clip(G * 255, 0, 255).astype(np.uint8)
     B = np.clip(B * 255, 0, 255).astype(np.uint8)
     return np.stack((R, G, B), axis=-1)
+
 
 
 
