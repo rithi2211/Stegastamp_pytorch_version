@@ -1,3 +1,4 @@
+
 import sys
 sys.path.append("PerceptualSimilarity\\")
 import os
@@ -12,6 +13,65 @@ import warnings
 warnings.filterwarnings('ignore')
 import unet_parts as UNet
 from torchvision import transforms
+
+def rgb_to_hsi(rgb):
+    # Normalize RGB values to [0, 1]
+    rgb = rgb / 255.0
+    
+    # Calculate Intensity
+    I = np.mean(rgb, axis=2)
+    
+    # Calculate Saturation
+    min_rgb = np.min(rgb, axis=2)
+    S = 1 - (min_rgb / (I + 1e-10))  # Adding a small value to avoid division by zero
+    
+    # Calculate Hue
+    H = np.zeros(rgb.shape[0:2])
+    num = 0.5 * ((rgb[..., 0] - rgb[..., 1]) + (rgb[..., 0] - rgb[..., 2]))
+    den = np.sqrt((rgb[..., 0] - rgb[..., 1])**2 + (rgb[..., 0] - rgb[..., 2]) * (rgb[..., 1] - rgb[..., 2]))
+    
+    theta = np.arccos(num / (den + 1e-10))  # Adding a small value to avoid division by zero
+    
+    H[min_rgb == rgb[..., 1]] = theta[min_rgb == rgb[..., 1]]
+    H[min_rgb == rgb[..., 2]] = 2 * np.pi - theta[min_rgb == rgb[..., 2]]
+    
+    H[min_rgb == rgb[..., 0]] = 0
+    H = H / (2 * np.pi)  # Normalize Hue to [0, 1]
+    return np.stack((H, S, I), axis=-1)
+
+def hsi_to_rgb(hsi):
+    H = hsi[..., 0] * 2 * np.pi  # Convert Hue back to [0, 2*pi]
+    S = hsi[..., 1]
+    I = hsi[..., 2]
+
+    # Initialize RGB channels
+    R = np.zeros(hsi.shape[0:2])
+    G = np.zeros(hsi.shape[0:2])
+    B = np.zeros(hsi.shape[0:2])
+
+    for i in range(hsi.shape[0]):
+        for j in range(hsi.shape[1]):
+            if H[i, j] < 2 * np.pi / 3:
+                R[i, j] = I[i, j] * (1 + S[i, j] * np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j]))
+                G[i, j] = I[i, j] * (1 + S[i, j] * (1 - np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j])))
+                B[i, j] = I[i, j] * (1 - S[i, j])
+            elif H[i, j] < 4 * np.pi / 3:
+                H[i, j] -= 2 * np.pi / 3
+                R[i, j] = I[i, j] * (1 - S[i, j])
+                G[i, j] = I[i, j] * (1 + S[i, j] * np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j]))
+                B[i, j] = I[i, j] * (1 + S[i, j] * (1 - np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j])))
+            else:
+                H[i, j] -= 4 * np.pi / 3
+                R[i, j] = I[i, j] * (1 + S[i, j] * (1 - np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j])))
+                G[i, j] = I[i, j] * (1 - S[i, j])
+                B[i, j] = I[i, j] * (1 + S[i, j] * np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j]))
+
+    # Clip RGB values to [0, 255] and convert to uint8
+    R = np.clip(R * 255, 0, 255).astype(np.uint8)
+    G = np.clip(G * 255, 0, 255).astype(np.uint8)
+    B = np.clip(B * 255, 0, 255).astype(np.uint8)
+    return np.stack((R, G, B), axis=-1)
+
 
 
 class Dense(nn.Module):
@@ -30,10 +90,13 @@ class Dense(nn.Module):
             raise NotImplementedError
 
     def forward(self, inputs):
+        # Convert inputs from RGB to HSI if inputs are images
+        if inputs.ndim == 4:  # Assuming inputs are images in (N, C, H, W) format
+            inputs = rgb_to_hsi(inputs)
         outputs = self.linear(inputs)
         if self.activation is not None:
             if self.activation == 'relu':
-                outputs = nn.ReLU(inplace=True)(outputs)
+                outputs = nn.ReLU(inplace=True)(outputs)     
         return outputs
 
 
@@ -51,12 +114,14 @@ class Conv2D(nn.Module):
         nn.init.kaiming_normal_(self.conv.weight)
 
     def forward(self, inputs):
+        # Perform convolution
         outputs = self.conv(inputs)
+        # Apply activation function if specified
         if self.activation is not None:
             if self.activation == 'relu':
                 outputs = nn.ReLU(inplace=True)(outputs)
             else:
-                raise NotImplementedError
+                raise NotImplementedError("Activation function not implemented")
         return outputs
 
 
@@ -73,7 +138,7 @@ class StegaStampEncoder(nn.Module):
         super(StegaStampEncoder, self).__init__()
         self.secret_dense = Dense(100, 7500, activation='relu', kernel_initializer='he_normal')
 
-        self.conv1 = Conv2D(6, 32, 3, activation='relu')
+        self.conv1 = Conv2D(3, 32, 3, activation='relu')
         self.conv2 = Conv2D(32, 32, 3, activation='relu', strides=2)
         self.conv3 = Conv2D(32, 64, 3, activation='relu', strides=2)
         self.conv4 = Conv2D(64, 128, 3, activation='relu', strides=2)
@@ -90,6 +155,8 @@ class StegaStampEncoder(nn.Module):
 
     def forward(self, inputs):
         secrect, image = inputs
+        image = rgb_to_hsi(image)  # Convert RGB to HSI
+        # Rest of the processing...
         secrect = secrect - .5
         image = image - .5
         # image is between [-0..5,0.5]
@@ -116,7 +183,7 @@ class StegaStampEncoder(nn.Module):
         merge9 = torch.cat([conv1, up9, inputs], dim=1)
         conv9 = self.conv9(merge9)
         residual = self.residual(conv9)
-        return residual
+        return hsi_to_rgb(residual)  # Convert HSI back to RGB
 
 
 class StegaStampEncoderUnet(nn.Module):
@@ -139,14 +206,12 @@ class StegaStampEncoderUnet(nn.Module):
 
     def forward(self, inputs):
         secrect, image = inputs
+        image = rgb_to_hsi(image)  # Convert RGB to HSI
         secrect = secrect - .5
         image = image - .5
-
         secrect = self.secret_dense(secrect)
         secrect = secrect.reshape(-1, 3, 50, 50)
-        image = nn.functional.interpolate(image, scale_factor=(1/8, 1/8))
-        # secrect_enlarged = nn.Upsample(scale_factor=(8, 8))(secrect)
-
+        image = nn.functional.interpolate(image, scale_factor=(1 / 8, 1 / 8))
         inputs = torch.cat([secrect, image], dim=1)
         conv1 = self.conv1(inputs)
         x1 = self.inc(conv1)
@@ -158,10 +223,10 @@ class StegaStampEncoderUnet(nn.Module):
         x = self.up3(x, x1)
         x = self.outc(x)
         x = self.conv2(x)
-
         secrect_enlarged = nn.Upsample(scale_factor=(8, 8))(x)
         secrect_enlarged = self.sig(secrect_enlarged)
-        return secrect_enlarged
+        return hsi_to_rgb(secrect_enlarged)
+
 
 
 class SpatialTransformerNetwork(nn.Module):
@@ -179,11 +244,13 @@ class SpatialTransformerNetwork(nn.Module):
         self.localization[-1].bias.data = torch.FloatTensor([1, 0, 0, 0, 1, 0])
 
     def forward(self, image):
+        image = rgb_to_hsi(image)  # Convert RGB to HSI
+	    # Rest of the processing...
         theta = self.localization(image)
         theta = theta.view(-1, 2, 3)
         grid = F.affine_grid(theta, image.size(), align_corners=False)
         transformed_image = F.grid_sample(image, grid, align_corners=False)
-        return transformed_image
+        return hsi_to_rgb(transformed_image)
 
 
 class StegaStampDecoder(nn.Module):
@@ -204,9 +271,11 @@ class StegaStampDecoder(nn.Module):
             Dense(512, secret_size, activation=None))
 
     def forward(self, image):
+        image = rgb_to_hsi(image)  # Convert RGB to HSI
+	    # Rest of the processing...
         image = image - .5
         transformed_image = self.stn(image)
-        return torch.sigmoid(self.decoder(transformed_image))
+        return hsi_to_rgb(torch.sigmoid(self.decoder(transformed_image)))
 
 
 class StegaStampDecoderUnet(nn.Module):
@@ -227,9 +296,11 @@ class StegaStampDecoderUnet(nn.Module):
             Dense(512, secret_size, activation=None))
 
     def forward(self, image):
+        image = rgb_to_hsi(image)  # Convert RGB to HSI
+		# Rest of the processing...
         image = image - .5
         transformed_image = self.stn(image)
-        return torch.sigmoid(self.decoder(transformed_image))
+        return hsi_to_rgb(torch.sigmoid(self.decoder(transformed_image)))
 
 
 class Discriminator(nn.Module):
@@ -243,10 +314,15 @@ class Discriminator(nn.Module):
             Conv2D(64, 1, 3, activation=None))
 
     def forward(self, image):
-        x = image - .5
+        image = rgb_to_hsi(image)  # Convert RGB to HSI
+        # Rest of the processing...
+        x = image - 0.5
         x = self.model(x)
         output = torch.mean(x)
-        return output, x
+        # Assuming you want to return both the output and the residual in RGB format
+        residual = x  # Define the residual if needed
+        return output, hsi_to_rgb(residual)  # Return output and converted residual
+    
 
 
 def transform_net(encoded_image, args, global_step):
