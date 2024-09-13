@@ -1,30 +1,31 @@
 import os
 import yaml
 import random
-import model  # Ensure this imports the correct model module
 import numpy as np
 from glob import glob
 from easydict import EasyDict
-from PIL import Image, ImageOps
+from PIL import Image
 from torch import optim
-import utils
-from dataset import StegaData
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import lpips
 import time
-from datetime import datetime, timedelta
-from kan_unet import KANU_Net  # Import the KAN-based U-Net model
+from datetime import timedelta
+
+import model
+import utils
+from dataset import Dataset  # Make sure this matches your dataset import
+from kan_unet import KANU_Net  # Import KAN-based U-Net
 
 CHECKPOINT_MARK_1 = 10_000
 CHECKPOINT_MARK_2 = 1500
-IMAGE_SIZE = 400
+IMAGE_SIZE = 224  # Match this to your dataset size
 
 def infoMessage0(string):
     print(f'[-----]: {string}')
 
-infoMessage0('opening settings file')
+infoMessage0('Opening settings file')
 with open('cfg/setting.yaml', 'r') as f:
     args = EasyDict(yaml.load(f, Loader=yaml.SafeLoader))
 
@@ -46,31 +47,29 @@ def main():
     log_path = os.path.join(args.logs_path, str(args.exp_name))
     writer = SummaryWriter(log_path)
     infoMessage0('Loading data')
-    dataset = StegaData(args.train_path, args.secret_size, size=(IMAGE_SIZE, IMAGE_SIZE))
+    dataset = Dataset(args.train_path, args.secret_size, size=(IMAGE_SIZE, IMAGE_SIZE))
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
 
-    # Replace StegaStampEncoder with KANU_Net for the new U-Net model
-    kanu_net = KANU_Net(n_channels=3, n_classes=1, bilinear=True, device='cuda' if torch.cuda.is_available() else 'cpu')
-    
-    discriminator = model.Discriminator()  # If you're keeping the discriminator
+    encoder = KANU_Net(n_channels=3, n_classes=1)  # Adjust channels/classes as needed
+    decoder = model.StegaStampDecoder(secret_size=args.secret_size)  # Assuming this is needed
+    discriminator = model.Discriminator()  # Assuming this is needed
     lpips_alex = lpips.LPIPS(net="alex", verbose=False)
-    
+
     args.cuda = torch.cuda.is_available()  # Check CUDA availability
     if args.cuda:
-        infoMessage0('cuda = True')
-        kanu_net = kanu_net.cuda()
+        infoMessage0('CUDA = True')
+        encoder = encoder.cuda()
+        decoder = decoder.cuda()
         discriminator = discriminator.cuda()
         lpips_alex.cuda()
 
     d_vars = discriminator.parameters()
-    g_vars = [{'params': kanu_net.parameters()}]
+    g_vars = [{'params': encoder.parameters()},
+              {'params': decoder.parameters()}]
 
     optimize_loss = optim.Adam(g_vars, lr=args.lr)
     optimize_secret_loss = optim.Adam(g_vars, lr=args.lr)
     optimize_dis = optim.RMSprop(d_vars, lr=0.00001)
-
-    height = IMAGE_SIZE
-    width = IMAGE_SIZE
 
     total_steps = len(dataset) // args.batch_size + 1
     global_step = 0
@@ -100,18 +99,17 @@ def main():
             if args.cuda:
                 Ms = Ms.cuda()
 
-            # Forward pass using the KANU_Net
-            image_output = kanu_net(image_input)
+            image_output = encoder((secret_input, image_input))  # Pass secret_input and image_input as tuple
 
             loss_scales = [l2_loss_scale, 0, secret_loss_scale, 0]
             yuv_scales = [args.y_scale, args.u_scale, args.v_scale]
-            # Ensure the `writer` argument is passed to `build_model`
             loss, secret_loss, D_loss, bit_acc, str_acc = model.build_model(
-                kanu_net, discriminator, lpips_alex, secret_input, image_input,
-                args.l2_edge_gain, args.borders, args.secret_size, Ms, 
-                loss_scales, yuv_scales, args, global_step, writer
+                encoder, decoder, discriminator, lpips_alex,
+                secret_input, image_input,
+                args.l2_edge_gain, args.borders,
+                args.secret_size, Ms, loss_scales,
+                yuv_scales, args, global_step, writer
             )
-            
             if no_im_loss:
                 optimize_secret_loss.zero_grad()
                 secret_loss.backward()
@@ -129,27 +127,31 @@ def main():
             steps_remaining = args.num_steps - global_step
             eta_seconds = (total_time_elapsed / global_step) * steps_remaining if global_step > 0 else 0
             eta = timedelta(seconds=int(eta_seconds))
-
+            
             if global_step % 10 == 0:
                 writer.add_scalars('Loss values', {'loss': loss.item(), 'secret loss': secret_loss.item(),
-                                                   'D_loss loss': D_loss.item()})
+                                                   'D_loss': D_loss.item()})
             if global_step % 100 == 0:
                 print(f"Step: {global_step}, Time per Step: {step_time:.2f} seconds, ETA: {eta}, Loss = {loss:.4f}")
             
             if global_step % CHECKPOINT_MARK_1 == 0:
-                torch.save(kanu_net, os.path.join(args.saved_models, "kanu_net.pth"))
+                torch.save(encoder.state_dict(), os.path.join(args.saved_models, "encoder.pth"))
+                torch.save(decoder.state_dict(), os.path.join(args.saved_models, "decoder.pth"))
 
             if global_step > CHECKPOINT_MARK_2:
                 if loss < args.min_loss:
                     args.min_loss = loss
-                    torch.save(kanu_net, os.path.join(args.checkpoints_path, "kanu_net_best_total_loss.pth"))
+                    torch.save(encoder.state_dict(), os.path.join(args.checkpoints_path, "encoder_best_total_loss.pth"))
+                    torch.save(decoder.state_dict(), os.path.join(args.checkpoints_path, "decoder_best_total_loss.pth"))
             if global_step > CHECKPOINT_MARK_1:
                 if secret_loss < args.min_secret_loss:
                     args.min_secret_loss = secret_loss
-                    torch.save(kanu_net, os.path.join(args.checkpoints_path, "kanu_net_best_secret_loss.pth"))
+                    torch.save(encoder.state_dict(), os.path.join(args.checkpoints_path, "encoder_best_secret_loss.pth"))
+                    torch.save(decoder.state_dict(), os.path.join(args.checkpoints_path, "decoder_best_secret_loss.pth"))
 
     writer.close()
-    torch.save(kanu_net, os.path.join(args.saved_models, "kanu_net.pth"))
+    torch.save(encoder.state_dict(), os.path.join(args.saved_models, "encoder.pth"))
+    torch.save(decoder.state_dict(), os.path.join(args.saved_models, "decoder.pth"))
 
 if __name__ == '__main__':
     main()
