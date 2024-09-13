@@ -33,6 +33,8 @@ if not os.path.exists(args.checkpoints_path):
 if not os.path.exists(args.saved_models):
     os.makedirs(args.saved_models)
 
+args.min_loss = float('inf')
+args.min_secret_loss = float('inf')
 
 def main():
     torch.manual_seed(args.seed)
@@ -50,6 +52,8 @@ def main():
     decoder = model.StegaStampDecoder(secret_size=args.secret_size)
     discriminator = model.Discriminator()
     lpips_alex = lpips.LPIPS(net="alex", verbose=False)
+    
+    args.cuda = torch.cuda.is_available()  # Check CUDA availability
     if args.cuda:
         infoMessage0('cuda = True')
         encoder = encoder.cuda()
@@ -74,13 +78,13 @@ def main():
     start_time = time.time()
 
     while global_step < args.num_steps:
-        for _ in range(min(total_steps, args.num_steps - global_step)):
+        for image_input, secret_input in dataloader:  # Use the dataloader directly
             step_start_time = time.time()
             
-            image_input, secret_input = next(iter(dataloader))
             if args.cuda:
                 image_input = image_input.cuda()
                 secret_input = secret_input.cuda()
+
             no_im_loss = global_step < args.no_im_loss_steps
             l2_loss_scale = min(args.l2_loss_scale * global_step / args.l2_loss_ramp, args.l2_loss_scale)
             secret_loss_scale = min(args.secret_loss_scale * global_step / args.secret_loss_ramp,
@@ -96,11 +100,7 @@ def main():
             if args.cuda:
                 Ms = Ms.cuda()
 
-            # Forward pass through encoder and decoder to get the output
-            image_output = encoder(image_input)
-
-            # Apply clamping to ensure pixel values are between 0 and 255
-            image_output = torch.clamp(image_output, 0, 255)
+            image_output = encoder((secret_input, image_input))  # Pass secret_input and image_input as tuple
 
             loss_scales = [l2_loss_scale, 0, secret_loss_scale, 0]
             yuv_scales = [args.y_scale, args.u_scale, args.v_scale]
@@ -121,6 +121,7 @@ def main():
                     optimize_dis.zero_grad()
                     optimize_dis.step()
 
+            
             step_time = time.time() - step_start_time
             total_time_elapsed = time.time() - start_time
             steps_remaining = args.num_steps - global_step
@@ -133,12 +134,10 @@ def main():
             if global_step % 100 == 0:
                 print(f"Step: {global_step}, Time per Step: {step_time:.2f} seconds, ETA: {eta}, Loss = {loss:.4f}")
             
-            # Get checkpoints:
             if global_step % CHECKPOINT_MARK_1 == 0:
                 torch.save(encoder, os.path.join(args.saved_models, "encoder.pth"))
                 torch.save(decoder, os.path.join(args.saved_models, "decoder.pth"))
 
-            # Save checkpoint of best image loss and secret loss
             if global_step > CHECKPOINT_MARK_2:
                 if loss < args.min_loss:
                     args.min_loss = loss
@@ -157,5 +156,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-    
