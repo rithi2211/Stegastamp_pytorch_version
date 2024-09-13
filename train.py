@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from fastkanconv import FastKANConvNet  # Import the Kan-based convolutional network
+from fastkanconv import FastKANConvLayer  # Import the Kan-based convolutional network
 from kan_unet import KANU_Net  # Import the Kan-based U-Net model
 from dataset import StegaData  # Assuming the dataset remains unchanged
 import utils
@@ -61,7 +61,7 @@ def main():
     encoder = KANU_Net(n_channels=3, n_classes=3)  # Assuming 3 input/output channels for RGB images
     decoder = KANU_Net(n_channels=args.secret_size, n_classes=3)  # Secret size as input, RGB output
 
-    discriminator = FastKANConvNet(in_channels=3, out_channels=1)  # Replace Discriminator with FastKANConvNet
+    discriminator = FastKANConvLayer(in_channels=3, out_channels=1)  # Replace Discriminator with FastKANConvNet
     lpips_alex = lpips.LPIPS(net="alex", verbose=False)
     
     args.cuda = torch.cuda.is_available()
