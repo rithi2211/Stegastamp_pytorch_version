@@ -46,7 +46,6 @@ def main():
     dataset = StegaData(args.train_path, args.secret_size, size=(IMAGE_SIZE, IMAGE_SIZE))
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
 
-    # encoder = model.StegaStampEncoder()   8.1.2023
     encoder = model.StegaStampEncoder()
     decoder = model.StegaStampDecoder(secret_size=args.secret_size)
     discriminator = model.Discriminator()
@@ -97,7 +96,12 @@ def main():
             if args.cuda:
                 Ms = Ms.cuda()
 
-            #loss_scales = [l2_loss_scale, lpips_loss_scale, secret_loss_scale, G_loss_scale]
+            # Forward pass through encoder and decoder to get the output
+            image_output = encoder(image_input)
+
+            # Apply clamping to ensure pixel values are between 0 and 255
+            image_output = torch.clamp(image_output, 0, 255)
+
             loss_scales = [l2_loss_scale, 0, secret_loss_scale, 0]
             yuv_scales = [args.y_scale, args.u_scale, args.v_scale]
             loss, secret_loss, D_loss, bit_acc, str_acc = model.build_model(encoder, decoder, discriminator, lpips_alex,
@@ -117,7 +121,6 @@ def main():
                     optimize_dis.zero_grad()
                     optimize_dis.step()
 
-            
             step_time = time.time() - step_start_time
             total_time_elapsed = time.time() - start_time
             steps_remaining = args.num_steps - global_step
@@ -127,7 +130,7 @@ def main():
             if global_step % 10 == 0:
                 writer.add_scalars('Loss values', {'loss': loss.item(), 'secret loss': secret_loss.item(),
                                                    'D_loss loss': D_loss.item()})
-            if global_step % 100 == 0 :
+            if global_step % 100 == 0:
                 print(f"Step: {global_step}, Time per Step: {step_time:.2f} seconds, ETA: {eta}, Loss = {loss:.4f}")
             
             # Get checkpoints:
@@ -135,7 +138,7 @@ def main():
                 torch.save(encoder, os.path.join(args.saved_models, "encoder.pth"))
                 torch.save(decoder, os.path.join(args.saved_models, "decoder.pth"))
 
-            # save checkpoint of best image loss and secret loss
+            # Save checkpoint of best image loss and secret loss
             if global_step > CHECKPOINT_MARK_2:
                 if loss < args.min_loss:
                     args.min_loss = loss
@@ -155,3 +158,4 @@ def main():
 if __name__ == '__main__':
     main()
 
+    
