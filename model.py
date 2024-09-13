@@ -14,64 +14,72 @@ warnings.filterwarnings('ignore')
 import unet_parts as UNet
 from torchvision import transforms
 
-def rgb_to_hsi(rgb):
-    # Normalize RGB values to [0, 1]
-    rgb = rgb / 255.0
+def rgb_to_hsi(rgb_image):
+    """
+    Convert an RGB image to HSI color space.
     
-    # Calculate Intensity
-    I = np.mean(rgb, axis=2)
+    :param rgb_image: NumPy array of shape (height, width, 3) representing an RGB image
+    :return: NumPy array of shape (height, width, 3) representing an HSI image
+    """
+    rgb_image = rgb_image.astype(np.float32) / 255.0
     
-    # Calculate Saturation
-    min_rgb = np.min(rgb, axis=2)
-    S = 1 - (min_rgb / (I + 1e-10))  # Adding a small value to avoid division by zero
+    r, g, b = rgb_image[:,:,0], rgb_image[:,:,1], rgb_image[:,:,2]
     
-    # Calculate Hue
-    H = np.zeros(rgb.shape[0:2])
-    num = 0.5 * ((rgb[..., 0] - rgb[..., 1]) + (rgb[..., 0] - rgb[..., 2]))
-    den = np.sqrt((rgb[..., 0] - rgb[..., 1])**2 + (rgb[..., 0] - rgb[..., 2]) * (rgb[..., 1] - rgb[..., 2]))
+    intensity = np.mean(rgb_image, axis=2)
     
-    theta = np.arccos(num / (den + 1e-10))  # Adding a small value to avoid division by zero
+    min_rgb = np.min(rgb_image, axis=2)
+    saturation = 1 - (3 / (r + g + b + 1e-10)) * min_rgb
+    saturation = np.clip(saturation, 0, 1)
     
-    H = np.where(min_rgb == rgb[..., 1], theta, H)
-    H = np.where(min_rgb == rgb[..., 2], 2 * np.pi - theta, H)
-    H = np.where(min_rgb == rgb[..., 0], 0, H)
+    hue = np.zeros_like(r)
     
-    H = H / (2 * np.pi)  # Normalize Hue to [0, 1]
-    return np.stack((H, S, I), axis=-1)
+    denominator = np.sqrt((r - g)**2 + (r - b) * (g - b))
+    theta = np.arccos(0.5 * ((r - g) + (r - b)) / (denominator + 1e-10))
+    
+    hue[b <= g] = theta[b <= g]
+    hue[b > g] = 2 * np.pi - theta[b > g]
+    hue /= 2 * np.pi
+    
+    return np.dstack((hue, saturation, intensity))
 
-def hsi_to_rgb(hsi):
-    H = hsi[..., 0] * 2 * np.pi  # Convert Hue back to [0, 2*pi]
-    S = hsi[..., 1]
-    I = hsi[..., 2]
+def hsi_to_rgb(hsi_image):
+    """
+    Convert an HSI image to RGB color space.
+    
+    :param hsi_image: NumPy array of shape (height, width, 3) representing an HSI image
+    :return: NumPy array of shape (height, width, 3) representing an RGB image
+    """
+    h, s, i = hsi_image[:,:,0], hsi_image[:,:,1], hsi_image[:,:,2]
+    
+    h *= 2 * np.pi
+    r = np.zeros_like(h)
+    g = np.zeros_like(h)
+    b = np.zeros_like(h)
+    
+    # RG sector (0 <= H < 2pi/3)
+    idx = (0 <= h) & (h < 2*np.pi/3)
+    b[idx] = i[idx] * (1 - s[idx])
+    r[idx] = i[idx] * (1 + s[idx] * np.cos(h[idx]) / np.cos(np.pi/3 - h[idx]))
+    g[idx] = 3*i[idx] - (r[idx] + b[idx])
+    
+    # GB sector (2pi/3 <= H < 4pi/3)
+    idx = (2*np.pi/3 <= h) & (h < 4*np.pi/3)
+    h[idx] -= 2*np.pi/3
+    r[idx] = i[idx] * (1 - s[idx])
+    g[idx] = i[idx] * (1 + s[idx] * np.cos(h[idx]) / np.cos(np.pi/3 - h[idx]))
+    b[idx] = 3*i[idx] - (r[idx] + g[idx])
+    
+    # BR sector (4pi/3 <= H < 2pi)
+    idx = (4*np.pi/3 <= h) & (h < 2*np.pi)
+    h[idx] -= 4*np.pi/3
+    g[idx] = i[idx] * (1 - s[idx])
+    b[idx] = i[idx] * (1 + s[idx] * np.cos(h[idx]) / np.cos(np.pi/3 - h[idx]))
+    r[idx] = 3*i[idx] - (g[idx] + b[idx])
+    
+    rgb_image = np.clip(np.dstack((r, g, b)), 0, 1)
+    return (rgb_image * 255).astype(np.uint8)
 
-    # Initialize RGB channels
-    R = np.zeros(hsi.shape[0:2])
-    G = np.zeros(hsi.shape[0:2])
-    B = np.zeros(hsi.shape[0:2])
-
-    for i in range(hsi.shape[0]):
-        for j in range(hsi.shape[1]):
-            if H[i, j] < 2 * np.pi / 3:
-                R[i, j] = I[i, j] * (1 + S[i, j] * np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j]))
-                G[i, j] = I[i, j] * (1 + S[i, j] * (1 - np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j])))
-                B[i, j] = I[i, j] * (1 - S[i, j])
-            elif H[i, j] < 4 * np.pi / 3:
-                H[i, j] -= 2 * np.pi / 3
-                R[i, j] = I[i, j] * (1 - S[i, j])
-                G[i, j] = I[i, j] * (1 + S[i, j] * np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j]))
-                B[i, j] = I[i, j] * (1 + S[i, j] * (1 - np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j])))
-            else:
-                H[i, j] -= 4 * np.pi / 3
-                R[i, j] = I[i, j] * (1 + S[i, j] * (1 - np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j])))
-                G[i, j] = I[i, j] * (1 - S[i, j])
-                B[i, j] = I[i, j] * (1 + S[i, j] * np.cos(H[i, j]) / np.cos(np.pi / 3 - H[i, j]))
-
-    # Clip RGB values to [0, 255] and convert to uint8
-    R = np.clip(R * 255, 0, 255).astype(np.uint8)
-    G = np.clip(G * 255, 0, 255).astype(np.uint8)
-    B = np.clip(B * 255, 0, 255).astype(np.uint8)
-    return np.stack((R, G, B), axis=-1)
-
+    
 class Dense(nn.Module):
     def __init__(self, in_features, out_features, activation='relu', kernel_initializer='he_normal'):
         super(Dense, self).__init__()
