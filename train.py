@@ -9,7 +9,7 @@ from torch import optim
 import torch
 import lpips
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -24,19 +24,17 @@ CHECKPOINT_MARK_2 = 1500
 IMAGE_SIZE = 400
 
 # Helper function for logging
-def infoMessage0(string):
-    print(f'[-----]: {string}')
+def log_message(message):
+    print(f'[INFO]: {message}')
 
 # Load settings from yaml config
-infoMessage0('opening settings file')
+log_message('Opening settings file...')
 with open('cfg/setting.yaml', 'r') as f:
-    args = EasyDict(yaml.load(f, Loader=yaml.SafeLoader))
+    args = EasyDict(yaml.safe_load(f))
 
-if not os.path.exists(args.checkpoints_path):
-    os.makedirs(args.checkpoints_path)
-
-if not os.path.exists(args.saved_models):
-    os.makedirs(args.saved_models)
+# Create directories if not present
+os.makedirs(args.checkpoints_path, exist_ok=True)
+os.makedirs(args.saved_models, exist_ok=True)
 
 args.min_loss = float('inf')
 args.min_secret_loss = float('inf')
@@ -53,40 +51,36 @@ def main():
     writer = SummaryWriter(log_path)
     
     # Load dataset
-    infoMessage0('Loading data')
+    log_message('Loading data...')
     dataset = StegaData(args.train_path, args.secret_size, size=(IMAGE_SIZE, IMAGE_SIZE))
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
 
     # Define models using KANU_Net for both encoder and decoder
     encoder = KANU_Net(n_channels=3, n_classes=3)  # Assuming 3 input/output channels for RGB images
     decoder = KANU_Net(n_channels=args.secret_size, n_classes=3)  # Secret size as input, RGB output
-
     discriminator = FastKANConvLayer(in_channels=3, out_channels=1)  # Replace Discriminator with FastKANConvNet
     lpips_alex = lpips.LPIPS(net="alex", verbose=False)
     
     args.cuda = torch.cuda.is_available()
     if args.cuda:
-        infoMessage0('Using CUDA')
+        log_message('Using CUDA...')
         encoder, decoder, discriminator, lpips_alex = encoder.cuda(), decoder.cuda(), discriminator.cuda(), lpips_alex.cuda()
 
-    # Optimizers for different model parts
-    d_vars = discriminator.parameters()
-    g_vars = [{'params': encoder.parameters()},
-              {'params': decoder.parameters()}]
-
+    # Optimizers
+    g_vars = [{'params': encoder.parameters()}, {'params': decoder.parameters()}]
     optimize_loss = optim.Adam(g_vars, lr=args.lr)
     optimize_secret_loss = optim.Adam(g_vars, lr=args.lr)
-    optimize_dis = optim.RMSprop(d_vars, lr=0.00001)
+    optimize_dis = optim.RMSprop(discriminator.parameters(), lr=0.00001)
 
     # Training loop variables
-    total_steps = len(dataset) // args.batch_size + 1
     global_step = 0
+    total_steps = len(dataloader)
     start_time = time.time()
 
     while global_step < args.num_steps:
         for image_input, secret_input in dataloader:
             step_start_time = time.time()
-            
+
             if args.cuda:
                 image_input, secret_input = image_input.cuda(), secret_input.cuda()
 
@@ -95,7 +89,7 @@ def main():
             secret_loss_scale = min(args.secret_loss_scale * global_step / args.secret_loss_ramp, args.secret_loss_scale)
 
             global_step += 1
-            
+
             # Apply the encoder and decoder models
             image_output = encoder(image_input)
             decoded_secret = decoder(secret_input)
@@ -116,6 +110,7 @@ def main():
                 optimize_loss.zero_grad()
                 loss.backward()
                 optimize_loss.step()
+
                 if not args.no_gan:
                     optimize_dis.zero_grad()
                     D_loss.backward()
@@ -124,29 +119,29 @@ def main():
             # Logging and checkpoint saving
             step_time = time.time() - step_start_time
             total_time_elapsed = time.time() - start_time
-            steps_remaining = args.num_steps - global_step
-            eta_seconds = (total_time_elapsed / global_step) * steps_remaining if global_step > 0 else 0
+            eta_seconds = (total_time_elapsed / global_step) * (args.num_steps - global_step) if global_step > 0 else 0
             eta = timedelta(seconds=int(eta_seconds))
-            
+
             if global_step % 10 == 0:
-                writer.add_scalars('Loss values', {'loss': loss.item(), 'secret loss': secret_loss.item(), 'D_loss loss': D_loss.item()})
+                writer.add_scalars('Loss values', {'loss': loss.item(), 'secret loss': secret_loss.item(), 'D_loss': D_loss.item()})
+
             if global_step % 100 == 0:
-                print(f"Step: {global_step}, Time per Step: {step_time:.2f} seconds, ETA: {eta}, Loss = {loss:.4f}")
-            
+                print(f"Step: {global_step}, Step Time: {step_time:.2f}s, ETA: {eta}, Loss: {loss:.4f}")
+
+            # Save checkpoints
             if global_step % CHECKPOINT_MARK_1 == 0:
                 torch.save(encoder.state_dict(), os.path.join(args.saved_models, "encoder.pth"))
                 torch.save(decoder.state_dict(), os.path.join(args.saved_models, "decoder.pth"))
 
-            if global_step > CHECKPOINT_MARK_2:
-                if loss < args.min_loss:
-                    args.min_loss = loss
-                    torch.save(encoder.state_dict(), os.path.join(args.checkpoints_path, "encoder_best_total_loss.pth"))
-                    torch.save(decoder.state_dict(), os.path.join(args.checkpoints_path, "decoder_best_total_loss.pth"))
-            if global_step > CHECKPOINT_MARK_1:
-                if secret_loss < args.min_secret_loss:
-                    args.min_secret_loss = secret_loss
-                    torch.save(encoder.state_dict(), os.path.join(args.checkpoints_path, "encoder_best_secret_loss.pth"))
-                    torch.save(decoder.state_dict(), os.path.join(args.checkpoints_path, "decoder_best_secret_loss.pth"))
+            if global_step > CHECKPOINT_MARK_2 and loss < args.min_loss:
+                args.min_loss = loss
+                torch.save(encoder.state_dict(), os.path.join(args.checkpoints_path, "encoder_best_total_loss.pth"))
+                torch.save(decoder.state_dict(), os.path.join(args.checkpoints_path, "decoder_best_total_loss.pth"))
+
+            if global_step > CHECKPOINT_MARK_1 and secret_loss < args.min_secret_loss:
+                args.min_secret_loss = secret_loss
+                torch.save(encoder.state_dict(), os.path.join(args.checkpoints_path, "encoder_best_secret_loss.pth"))
+                torch.save(decoder.state_dict(), os.path.join(args.checkpoints_path, "decoder_best_secret_loss.pth"))
 
     writer.close()
     torch.save(encoder.state_dict(), os.path.join(args.saved_models, "encoder.pth"))
@@ -154,4 +149,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
